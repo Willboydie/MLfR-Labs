@@ -20,6 +20,14 @@ from robotnik_arm_control import (
     ArmControllerParams, BaseControllerParams, BaseNavState, StopCriteria,
     arm_controller, base_controller, check_stop, configure_gripper_fingers, quaternion2bearing,
 )
+from robotnik_markov_expert import (
+    ArmControllerParams as MarkovArmParams,
+    BaseControllerParams as MarkovBaseParams,
+    MarkovExpert,
+    check_stop as markov_check_stop,
+    integrator_update,
+    relative_target,
+)
 
 
 # ==============================================================================
@@ -55,6 +63,14 @@ REACH_TOLERANCE = 0.01
 # ==============================================================================
 
 TASK_DIR = os.path.dirname(os.path.abspath(__file__))
+PLOTS_DIR = os.path.join(TASK_DIR, "plots")
+
+
+def plots_dir(*parts):
+    """Directory for figures, created if needed. `plots_dir("bc")` is `plots/bc`."""
+    path = os.path.join(PLOTS_DIR, *parts)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def sparse_target_grid():
@@ -175,24 +191,58 @@ def setup_simulation():
     }
 
 
+def _standoff_distance(target_ee_pos):
+    """Horizontal distance from the parked base origin to the target.
+
+    This is the distance the phased controller's goal pose sits from the target.
+    The Markov base law takes that distance directly and does not use a goal pose.
+    """
+    return float(np.interp(target_ee_pos[2], STANDOFF_Z_POINTS, STANDOFF_POINTS))
+
+
 def _base_goal(target_ee_pos):
-    """Standoff pose the base drives to before the arm reaches."""
-    standoff = float(np.interp(target_ee_pos[2], STANDOFF_Z_POINTS, STANDOFF_POINTS))
+    """Standoff pose the phased base controller drives to before the arm reaches."""
+    standoff = _standoff_distance(target_ee_pos)
     target_xy = target_ee_pos[:2]
     target_bearing = np.arctan2(target_xy[1], target_xy[0]) if np.linalg.norm(target_xy) > 1e-4 else 0.0
     base_goal_pos = target_xy - standoff * np.array([np.cos(target_bearing), np.sin(target_bearing)])
     return base_goal_pos, target_bearing
 
 
-def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False, on_step=None):
-    """Reset the robot and run the expert until a stop condition.
+def _markov_expert(ctx, target_ee_pos):
+    """Markov expert for this target. Only the standoff depends on the target.
+
+    The cartesian integrator z is not kept here. The episode loop updates it with
+    integrator_update and passes it in on each call.
+    """
+    return MarkovExpert(
+        ctx["dyn_model"],
+        ctx["ee_frame_id"],
+        ctx["shoulder_frame_id"],
+        ctx["arm_lower"],
+        ctx["arm_upper"],
+        ctx["q_init_arm"],
+        MarkovArmParams(reach_limit=ARM_REACH_LIMIT),
+        MarkovBaseParams(standoff=_standoff_distance(target_ee_pos)),
+    )
+
+
+def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False, on_step=None,
+                controller="phased"):
+    """Reset the robot and run one expert until a stop condition.
+
+    `controller` is `"phased"` (the original base phases plus joint-space integrator) or
+    `"markov"` (a call on the heading-frame observation and the cartesian integrator z).
+    Both start from the same reset pose. `target_ee_pos` is a world-frame Cartesian point (m).
 
     Returns final error, the stop message, and (optionally) the time series used by the
-    single-target plots. `target_ee_pos` is a world-frame Cartesian point (m).
+    single-target plots.
 
     `on_step(current_time, ee_dist_error)` is called about 20 times a second after the
     physics step. Return False from it to stop the episode early.
     """
+    if controller not in ("phased", "markov"):
+        raise ValueError(f"Unknown controller {controller!r}; expected 'phased' or 'markov'")
     sim = ctx["sim"]
     client = ctx["client"]
     dyn_model = ctx["dyn_model"]
@@ -205,12 +255,20 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
     sim.ReceiveObservation()
     _place_target_marker(ctx, target_ee_pos)
 
-    base_goal_pos, base_goal_bearing = _base_goal(target_ee_pos)
-    base_state = BaseNavState()
     q_init_arm = ctx["q_init_arm"]
     q_des_arm = q_init_arm.copy()
     qd_des_arm = np.zeros(7)
     stop_criteria = StopCriteria(reach_tolerance=REACH_TOLERANCE, max_steps=max_steps)
+    if controller == "markov":
+        markov_expert = _markov_expert(ctx, target_ee_pos)
+        # z integrates the end-effector error outside the expert. It starts at rest.
+        z = np.zeros(3)
+        base_state = None
+        base_goal_pos = base_goal_bearing = None
+    else:
+        markov_expert = None
+        base_goal_pos, base_goal_bearing = _base_goal(target_ee_pos)
+        base_state = BaseNavState()
     cmd = MotorCommands()
 
     time_all, ee_pos_all, ee_error_all = [], [], []
@@ -229,6 +287,7 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
     init_ee_pos = dyn_model.pin_data.oMf[ctx["ee_frame_id"]].translation.copy()
     if verbose:
         print("==================================================================")
+        print(f"Controller                   : {controller}")
         print(f"Target Cartesian EE Position : {target_ee_pos}")
         print(f"Initial Cartesian EE Position: {np.round(init_ee_pos, 4)}")
         print(f"Initial Cartesian Error (m)  : {np.linalg.norm(target_ee_pos - init_ee_pos):.4f}")
@@ -257,16 +316,30 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         ee_error = target_ee_pos - ee_pos
         ee_dist_error = np.linalg.norm(ee_error)
 
-        wheel_cmds = base_controller(
-            base_state, base_pos, base_bearing, base_goal_pos, base_goal_bearing, current_time, ctx["base_params"]
-        )
-        base_navigation_done = base_state.done
-
-        torque_arm, q_des_arm, qd_des_arm = arm_controller(
-            dyn_model, q_pin, q_mes[4:11], qd_mes[4:11], q_des_arm, q_init_arm, target_ee_pos, ee_pos,
-            ctx["ee_frame_id"], ctx["shoulder_frame_id"], ctx["arm_lower"], ctx["arm_upper"], time_step,
-            ctx["arm_params"], reach_active=base_navigation_done,
-        )
+        if controller == "markov":
+            # World pose enters only through the heading-frame displacement.
+            # The command uses the current z; the update below is z for the next step.
+            target_rel = relative_target(target_ee_pos, base_pos, base_bearing)
+            cmd_exp = markov_expert(q_pin, q_mes[4:11], qd_mes[4:11], target_rel, z)
+            wheel_cmds = cmd_exp.wheel_cmd
+            torque_arm = cmd_exp.torque_arm
+            q_des_arm = cmd_exp.q_ref_arm
+            arm_engaged = cmd_exp.reach_weight >= 0.999
+            stop_ee = cmd_exp.ee_error
+            z = integrator_update(
+                z, cmd_exp.cartesian_error, cmd_exp.reach_weight, time_step, markov_expert.arm_params.z_max,
+            )
+        else:
+            wheel_cmds = base_controller(
+                base_state, base_pos, base_bearing, base_goal_pos, base_goal_bearing, current_time, ctx["base_params"]
+            )
+            arm_engaged = base_state.done
+            torque_arm, q_des_arm, qd_des_arm = arm_controller(
+                dyn_model, q_pin, q_mes[4:11], qd_mes[4:11], q_des_arm, q_init_arm, target_ee_pos, ee_pos,
+                ctx["ee_frame_id"], ctx["shoulder_frame_id"], ctx["arm_lower"], ctx["arm_upper"], time_step,
+                ctx["arm_params"], reach_active=arm_engaged,
+            )
+            stop_ee = ee_dist_error
         torque_fingers = np.zeros(6)
 
         cmd_all = np.concatenate((wheel_cmds, torque_arm, torque_fingers))
@@ -286,7 +359,12 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
             stop_message = "Stopped by user"
             break
 
-        stop_message = check_stop(stop_criteria, current_time, time_step, ee_dist_error, base_navigation_done)
+        if controller == "markov":
+            stop_message = markov_check_stop(
+                stop_criteria, current_time, time_step, stop_ee, arm_engaged
+            )
+        else:
+            stop_message = check_stop(stop_criteria, current_time, time_step, stop_ee, arm_engaged)
         if stop_message:
             if verbose:
                 print(stop_message)
@@ -301,7 +379,10 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
             q_d_all.append(current_desired_q)
             torque_arm_all.append(np.asarray(torque_arm, dtype=float).copy())
             wheel_cmds_all.append(np.asarray(wheel_cmds, dtype=float).copy())
-            phase_all.append("done" if base_state.done else base_state.phase)
+            if controller == "markov":
+                phase_all.append("reach" if arm_engaged else "hold")
+            else:
+                phase_all.append("done" if base_state.done else base_state.phase)
             q_des_arm_all.append(np.asarray(q_des_arm, dtype=float).copy())
 
         if on_step is not None and step_index % 50 == 0:
@@ -318,10 +399,17 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         current_time += time_step
         step_index += 1
         if verbose and int(current_time / time_step) % 500 == 0:
+            if controller == "markov":
+                status = (
+                    f"reach_w {cmd_exp.reach_weight:.2f} engaged {arm_engaged} "
+                    f"|z| {np.linalg.norm(z):.4f}"
+                )
+            else:
+                status = f"phase {base_state.phase} nav_done {arm_engaged}"
             print(
                 f"t={current_time:.2f}s | Base pos: {np.round(base_pos[:2], 3)} | "
                 f"EE pos: {np.round(ee_pos, 3)} | EE error: {ee_dist_error:.4f}m | "
-                f"yaw {base_bearing:.2f} phase {base_state.phase} nav_done {base_navigation_done}"
+                f"yaw {base_bearing:.2f} {status}"
             )
 
     final_error = float(np.linalg.norm(target_ee_pos - ee_pos))
@@ -337,6 +425,7 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         print("==================================================================")
 
     return {
+        "controller": controller,
         "target": target_ee_pos,
         "final_error": final_error,
         "final_ee_pos": np.asarray(ee_pos, dtype=float).copy(),
@@ -424,7 +513,7 @@ def plot_command_signals(result, out_dir=None):
         print("No samples logged; skipping command plots.")
         return []
 
-    out_dir = TASK_DIR if out_dir is None else out_dir
+    out_dir = plots_dir("expert") if out_dir is None else out_dir
     tag = _target_tag(result["target"])
     joint_colors = plt.cm.tab10(np.linspace(0.0, 0.7, 7))
     saved = []
@@ -591,7 +680,7 @@ def _report_and_plot(targets, errors):
     print("==================================================================")
 
     fig = plot_targets_by_error(targets, errors)
-    out_path = os.path.join(TASK_DIR, "expert_grid_error.png")
+    out_path = os.path.join(plots_dir("expert"), "expert_grid_error.png")
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     print(f"Saved {out_path}")
     if headless:
@@ -671,6 +760,192 @@ def evaluate_sparse_grid():
     _report_and_plot(scored_targets, errors)
 
 
+# Ten sparse-grid targets: front, side, behind and a diagonal at each height band.
+COMPARE_TARGETS = [
+    np.array([1.2, 0.0, 0.25]),
+    np.array([0.0, 1.2, 0.25]),
+    np.array([-1.2, 0.0, 0.25]),
+    np.array([1.2, 1.2, 0.25]),
+    np.array([1.2, 0.0, 0.70]),
+    np.array([0.0, -1.2, 0.70]),
+    np.array([-1.2, 0.0, 0.70]),
+    np.array([-1.2, 1.2, 0.70]),
+    np.array([1.2, 0.0, 1.15]),
+    np.array([-1.2, -1.2, 1.15]),
+]
+# The 1 ms config used a 40000-step cap, which is 40 s of simulation.
+COMPARE_SIM_SECONDS = 40.0
+
+
+def _target_panel_title(result_a, result_b):
+    target = np.asarray(result_a["target"], dtype=float)
+    return (
+        f"({target[0]:.1f}, {target[1]:.1f}, {target[2]:.2f})  "
+        f"orig {result_a['final_error']:.3f} m / markov {result_b['final_error']:.3f} m"
+    )
+
+
+def plot_controller_comparison(phased_results, markov_results):
+    """Overlay original and Markov wheel commands, arm torques and EE error.
+
+    One panel per target. Wheel commands show the two distinct sides (the back
+    wheel on each side copies the front). Torque panels use one colour per joint;
+    solid is the original, dashed is Markov.
+    """
+    n = len(phased_results)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    saved = []
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11.5, 2.35 * nrows), squeeze=False)
+    flat = axes.ravel()
+    for ax, phased, markov in zip(flat, phased_results, markov_results):
+        if len(phased["time_all"]):
+            ax.plot(
+                phased["time_all"], np.linalg.norm(phased["ee_error_all"], axis=1),
+                color="C0", lw=1.3, label="Original",
+            )
+        if len(markov["time_all"]):
+            ax.plot(
+                markov["time_all"], np.linalg.norm(markov["ee_error_all"], axis=1),
+                color="C1", lw=1.2, label="Markov",
+            )
+        ax.axhline(REACH_TOLERANCE, color="k", ls=":", lw=0.8)
+        ax.set_title(_target_panel_title(phased, markov), fontsize=8)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("EE error (m)")
+        ax.grid(True, alpha=0.3)
+    for ax in flat[n:]:
+        ax.axis("off")
+    flat[0].legend(loc="upper right", fontsize=8)
+    fig.suptitle("End-effector error — original vs Markov", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    compare_dir = plots_dir("markov_vs_original")
+    ee_path = os.path.join(compare_dir, "ee.png")
+    fig.savefig(ee_path, dpi=120, bbox_inches="tight")
+    saved.append(ee_path)
+
+    fig, axes = plt.subplots(n, 2, figsize=(10.5, 1.55 * n), sharex=True, squeeze=False)
+    for row, (phased, markov) in enumerate(zip(phased_results, markov_results)):
+        for col, index, name in ((0, 0, "Right wheels"), (1, 1, "Left wheels")):
+            ax = axes[row, col]
+            if len(phased["time_all"]):
+                ax.plot(phased["time_all"], phased["wheel_cmds_all"][:, index], color="C0", lw=1.15, label="Original")
+            if len(markov["time_all"]):
+                ax.plot(markov["time_all"], markov["wheel_cmds_all"][:, index], color="C1", lw=1.05, label="Markov")
+            ax.grid(True, alpha=0.3)
+            if row == 0:
+                ax.set_title(name)
+            if col == 0:
+                ax.set_ylabel(_target_tag(phased["target"]), fontsize=7)
+            if row == n - 1:
+                ax.set_xlabel("Time (s)")
+    axes[0, 0].legend(loc="upper right", fontsize=8)
+    fig.suptitle(
+        "Wheel commands (rad/s) — original vs Markov\nBack wheel on each side copies the front",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    wheel_path = os.path.join(compare_dir, "wheels.png")
+    fig.savefig(wheel_path, dpi=120, bbox_inches="tight")
+    saved.append(wheel_path)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12.5, 2.6 * nrows), squeeze=False)
+    flat = axes.ravel()
+    joint_colors = plt.cm.tab10(np.linspace(0.0, 0.7, 7))
+    for ax, phased, markov in zip(flat, phased_results, markov_results):
+        for i in range(7):
+            if len(phased["time_all"]):
+                ax.plot(
+                    phased["time_all"], phased["torque_arm_all"][:, i],
+                    color=joint_colors[i], lw=1.0, label=f"J{i + 1}",
+                )
+            if len(markov["time_all"]):
+                ax.plot(
+                    markov["time_all"], markov["torque_arm_all"][:, i],
+                    color=joint_colors[i], lw=1.0, ls="--",
+                )
+        ax.set_title(_target_panel_title(phased, markov), fontsize=8)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Torque (N·m)")
+        ax.grid(True, alpha=0.3)
+    for ax in flat[n:]:
+        ax.axis("off")
+    flat[0].legend(ncol=7, loc="upper right", fontsize=7)
+    fig.suptitle("Arm torques — solid original, dashed Markov, colour is the joint", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    torque_path = os.path.join(compare_dir, "torques.png")
+    fig.savefig(torque_path, dpi=120, bbox_inches="tight")
+    saved.append(torque_path)
+
+    for path in saved:
+        print(f"Saved {path}")
+    if headless:
+        plt.close("all")
+    else:
+        plt.show()
+    return saved
+
+
+def compare_controllers():
+    """Run the phased expert and the Markov expert on the same ten targets."""
+    global max_steps
+    targets = [np.asarray(target, dtype=float) for target in COMPARE_TARGETS]
+    print(f"Comparing controllers on {len(targets)} targets", flush=True)
+    ctx = setup_simulation()
+    dt = float(ctx["time_step"])
+    max_steps = int(round(COMPARE_SIM_SECONDS / dt))
+    print(f"Physics dt {dt:.4f} s, step cap {max_steps} ({COMPARE_SIM_SECONDS:.0f} s)", flush=True)
+    phased_results = []
+    markov_results = []
+    try:
+        for i, target in enumerate(targets):
+            print(f"[{i + 1}/{len(targets)}] target {np.round(target, 3)}", flush=True)
+            for name, bucket in (("phased", phased_results), ("markov", markov_results)):
+                wall_start = time.perf_counter()
+                result = run_episode(ctx, target, record=True, verbose=False, realtime=False, controller=name)
+                bucket.append(result)
+                print(
+                    f"    {name:6}  error {result['final_error']:.4f} m at t={result['time']:.2f}s "
+                    f"(wall {time.perf_counter() - wall_start:.1f}s) | {result['stop_message']}",
+                    flush=True,
+                )
+                if result["user_quit"]:
+                    break
+            if phased_results and phased_results[-1]["user_quit"]:
+                break
+    finally:
+        ctx["client"].disconnect()
+
+    if len(phased_results) != len(markov_results) or not phased_results:
+        print("Comparison stopped before a full pair was recorded.")
+        return
+
+    scored = np.vstack([result["target"] for result in phased_results])
+    out_path = os.path.join(plots_dir("markov_vs_original"), "markov_vs_original.npz")
+    np.savez(
+        out_path,
+        targets=scored,
+        dt=np.float64(dt),
+        phased_errors=np.array([result["final_error"] for result in phased_results]),
+        markov_errors=np.array([result["final_error"] for result in markov_results]),
+        phased_times=np.array([result["time"] for result in phased_results]),
+        markov_times=np.array([result["time"] for result in markov_results]),
+        phased_messages=np.array([result["stop_message"] or "" for result in phased_results]),
+        markov_messages=np.array([result["stop_message"] or "" for result in markov_results]),
+        phased_t=np.array([result["time_all"] for result in phased_results], dtype=object),
+        markov_t=np.array([result["time_all"] for result in markov_results], dtype=object),
+        phased_ee=np.array([np.linalg.norm(result["ee_error_all"], axis=1) for result in phased_results], dtype=object),
+        markov_ee=np.array([np.linalg.norm(result["ee_error_all"], axis=1) for result in markov_results], dtype=object),
+        phased_wheels=np.array([result["wheel_cmds_all"] for result in phased_results], dtype=object),
+        markov_wheels=np.array([result["wheel_cmds_all"] for result in markov_results], dtype=object),
+        phased_torques=np.array([result["torque_arm_all"] for result in phased_results], dtype=object),
+        markov_torques=np.array([result["torque_arm_all"] for result in markov_results], dtype=object),
+    )
+    print(f"Saved {out_path}")
+    plot_controller_comparison(phased_results, markov_results)
+
+
 def main():
     ctx = setup_simulation()
     try:
@@ -685,7 +960,9 @@ def main():
 
 
 if __name__ == '__main__':
-    if "--grid-plot" in sys.argv:
+    if "--compare" in sys.argv:
+        compare_controllers()
+    elif "--grid-plot" in sys.argv:
         plot_saved_grid()
     elif os.environ.get("ROBOENV_GRID", "").strip().lower() in ("1", "true", "yes") or "--grid" in sys.argv:
         evaluate_sparse_grid()

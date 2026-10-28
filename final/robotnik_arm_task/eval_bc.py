@@ -327,7 +327,7 @@ def plot_signal_comparison(expert, clone):
     axes[-1].set_xlabel("Time (s)")
     fig.suptitle(f"Wheel commands — {tag}\n{subtitle}", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.90))
-    wheel_path = os.path.join(TASK_DIR, "bc_vs_expert_wheels.png")
+    wheel_path = os.path.join(task.plots_dir("bc"), "bc_vs_expert_wheels.png")
     fig.savefig(wheel_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {wheel_path}")
@@ -345,7 +345,7 @@ def plot_signal_comparison(expert, clone):
     flat[7].axis("off")
     fig.suptitle(f"Arm torques — {tag}\n{subtitle}", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
-    torque_path = os.path.join(TASK_DIR, "bc_vs_expert_torques.png")
+    torque_path = os.path.join(task.plots_dir("bc"), "bc_vs_expert_torques.png")
     fig.savefig(torque_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {torque_path}")
@@ -434,13 +434,13 @@ def main():
             "Black + is the robot start. Slice labels are the error in metres."
         ),
     )
-    grid_path = os.path.join(TASK_DIR, "bc_grid_error.png")
+    grid_path = os.path.join(task.plots_dir("bc"), "bc_grid_error.png")
     fig.savefig(grid_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {grid_path}")
 
     if np.any(np.isfinite(expert_errors)):
-        plot_comparison(scored, model_errors, expert_errors, os.path.join(TASK_DIR, "bc_vs_expert.png"))
+        plot_comparison(scored, model_errors, expert_errors, os.path.join(task.plots_dir("bc"), "bc_vs_expert.png"))
     report(scored, model_errors, expert_errors, messages)
 
 

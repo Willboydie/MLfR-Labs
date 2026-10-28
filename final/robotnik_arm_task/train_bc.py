@@ -26,6 +26,7 @@ from sklearn.model_selection import GroupShuffleSplit
 from xgboost import XGBClassifier, XGBRegressor
 
 # Imports the task module, which selects the matplotlib backend before pyplot loads.
+import robotnik_arm_task as task
 from bc_features import (
     DATA_DIR,
     FEATURE_NAMES,
@@ -37,7 +38,6 @@ from bc_features import (
     PHASE_LABELS,
     PHASE_ORDER,
     SEED,
-    TASK_DIR,
     action_labels,
     episode_feature_matrix,
     episode_path,
@@ -340,7 +340,7 @@ def main():
     prediction = model.predict(x_val)
     table, counts = rmse_table(y_val, prediction, phase_val)
     print_rmse(table, counts)
-    rmse_path = os.path.join(TASK_DIR, "bc_val_rmse_by_phase.png")
+    rmse_path = os.path.join(task.plots_dir("bc"), "bc_val_rmse_by_phase.png")
     plot_rmse(table, counts, rmse_path)
 
     print("\nFitting the phase classifier", flush=True)
@@ -363,7 +363,7 @@ def main():
     recalls = cm.diagonal() / np.maximum(cm.sum(axis=1), 1)
     for name, recall, count in zip(PHASE_ORDER, recalls, cm.sum(axis=1)):
         print(f"  {PHASE_LABELS[name]:<16} recall {recall:.3f}  n={int(count)}")
-    confusion_path = os.path.join(TASK_DIR, "bc_phase_classifier.png")
+    confusion_path = os.path.join(task.plots_dir("bc"), "bc_phase_classifier.png")
     plot_confusion(cm, accuracy, balanced, majority, confusion_path)
 
     with open(os.path.join(args.model, "diagnostics.json"), "w", encoding="utf-8") as handle:

@@ -1,0 +1,24 @@
+# COMP0245 Machine Learning for Robotics.
+# Third-party packages from RoboEnv/pyproject.toml, plus scikit-optimize
+# from RoboEnv/pixi.toml (Bayesian optimisation labs).
+numpy
+scipy
+matplotlib
+casadi
+pybullet
+robot-descriptions
+osqp
+scikit-optimize>=0.10.2,<0.11
+
+# Behaviour cloning for the robotnik arm task. Install these into the RoboEnv
+# pixi environment (the same one that provides pinocchio), for example:
+#   cd RoboEnv && pixi add --pypi "xgboost>=2.0" "scikit-learn>=1.3"
+xgboost>=2.0
+scikit-learn>=1.3
+
+# RoboEnv (and its simulation_and_control submodule) is installed editable
+# from ./RoboEnv. Do not list it here: its pyproject depends on the PyPI
+# package "pin", which has no Windows wheels. On Windows, pinocchio comes
+# from the RoboEnv pixi environment (conda-forge):
+#   cd RoboEnv
+#   pixi install

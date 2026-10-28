@@ -4,6 +4,8 @@
 
 Expected behaviour: pybullet 3D environment with 7dof arm mounted on a 4-wheeled platform. The robot moves to reach a target (red dot) with its end-effector. The simulation terminates when the target is reached, and plots of the robot behaviour are shown.
 
+To choose the target yourself and watch the expert, run `expert_gui.py` in the same environment (from `RoboEnv`: `pixi run python ../final/robotnik_arm_task/expert_gui.py`). Set X, Y, Z and press GO. Each run starts from the default pose.
+
 Key variables in robotnik_arm_task.py:
 
  - TARGET_EE_POS: reach target point in cartesian coordinates (x,y,z), represented by a red dot.

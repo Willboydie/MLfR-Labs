@@ -87,8 +87,8 @@ def main():
         # Optional: print current time
         print(f"Current time in seconds: {current_time:.2f}")
 
-    # TODO After data collection, stack all the regressor and all the torque and compute the parameters 'a'  using pseudoinverse for all the joint
-    s
+    # TODO After data collection, stack all the regressor and all the torque and compute the parameters 'a'  using pseudoinverse for all the joints
+    
     
     # TODO reshape the regressor and the torque vector to isolate the last joint and find the its dynamical parameters
   

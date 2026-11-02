@@ -65,7 +65,10 @@ Typical loop
     cmd = expert(q_pin, q_arm, qd_arm, target_rel, z)
     z = integrator_update(z, cmd.cartesian_error, cmd.reach_weight, dt, expert.arm_params.z_max)
     # apply cmd.wheel_cmd and cmd.torque_arm
-    stop = check_stop(criteria, t, dt, cmd.ee_error, arm_engaged=cmd.reach_weight >= 0.999)
+    # World-frame distance, not cmd.ee_error: the heading-frame one differs by a
+    # few millimetres once the base rolls or pitches.
+    ee_dist = np.linalg.norm(target_world - ee_world)
+    stop = check_stop(criteria, t, dt, ee_dist, arm_engaged=cmd.reach_weight >= 0.999)
 """
 from dataclasses import dataclass
 
@@ -432,6 +435,22 @@ class MarkovExpert:
         self.gate_params = gate_params if gate_params is not None else ReachGateParams()
         self.arm_v = arm_v
 
+    def cartesian_feedback(self, q_pin, target_rel):
+        """Reach weight and cartesian error for ``integrator_update``.
+
+        Forward kinematics only. The learned policy does not emit these, and the
+        integrator outside the network needs the same two numbers the expert uses.
+        """
+        target_rel = np.asarray(target_rel, dtype=float)
+        reach_w = reach_weight(target_rel, self.base_params, self.gate_params)
+        q_canon = heading_frame_configuration(q_pin)
+        pin.forwardKinematics(self.model, self._data, q_canon)
+        pin.updateFramePlacements(self.model, self._data)
+        ee_rel = self._data.oMf[self.ee_frame_id].translation.copy()
+        shoulder_rel = self._data.oMf[self.shoulder_frame_id].translation.copy()
+        ee_error_vec = cartesian_error(target_rel, ee_rel, shoulder_rel, self.arm_params.reach_limit)
+        return ee_error_vec, reach_w
+
     def __call__(self, q_pin, q_arm, qd_arm, target_rel, z):
         """Commands for one (observation, z) pair.
 
@@ -498,32 +517,63 @@ class StopCriteria:
     min_time: float = 8.0                      # s before reached / stalled can trigger
     stall_window: float = 3.0                  # s without meaningful improvement of the EE error
     stall_improvement: float = 0.002           # m
+    dwell_time: float = 0.50                   # s the EE must stay inside the tolerance
+    flythrough_rise: float = 0.02              # m above the best that voids that best
     best_ee_error: float = np.inf
     best_ee_error_time: float = 0.0
+    inside_since: float = -1.0                 # < 0 when the EE is outside the tolerance
 
 
 def check_stop(criteria, current_time, time_step, ee_dist_error, arm_engaged):
-    """Evaluate the stop conditions for the current step.
+    """Stop when the arm has settled, not when the end-effector sweeps past the target.
 
     Returns a message describing why the simulation should stop, or None to continue.
-    arm_engaged replaces base_navigation_done; pass cmd.reach_weight >= 0.999.
-    Stall tracking only runs while the arm is engaged. A base that never reaches its parking set
-    is caught by max_steps.
+    `arm_engaged` replaces base_navigation_done; pass `cmd.reach_weight >= 0.999`.
+    That gate opens while the base is still yawing into its wheel deadzone, so the
+    distance can dive through the tolerance and bounce straight back out. Pass the
+    world-frame distance: it is what the episode is scored on.
+
+    A one-sample crossing is not a reach. The distance has to stay inside the
+    tolerance for `dwell_time`. The minimum of a dive is not a pose the arm is
+    holding: a later rise of `flythrough_rise` voids it, and the recovery is timed
+    as a new approach. Time before `min_time` does not count toward the stall
+    window, so a best recorded on the way in cannot expire on the first step that
+    is allowed to stop. Stall tracking only runs while the arm is engaged. A base
+    that never reaches its parking set is caught by max_steps.
     """
     if criteria.max_steps and current_time / time_step >= criteria.max_steps:
         return f"Reached step cap {criteria.max_steps} at t={current_time:.2f}s"
 
-    if arm_engaged:
-        if ee_dist_error < criteria.best_ee_error - criteria.stall_improvement:
-            criteria.best_ee_error = ee_dist_error
-            criteria.best_ee_error_time = current_time
-        elif (current_time - criteria.best_ee_error_time > criteria.stall_window
-              and current_time > criteria.min_time):
-            return (f"Target not reachable: closest pose reached at t={current_time:.2f}s "
-                    f"(best EE error {criteria.best_ee_error:.4f} m, current {ee_dist_error:.4f} m)")
+    if not arm_engaged:
+        criteria.best_ee_error = np.inf
+        criteria.best_ee_error_time = current_time
+        criteria.inside_since = -1.0
+        return None
 
-    if arm_engaged and ee_dist_error < criteria.reach_tolerance and current_time > criteria.min_time:
-        return f"Target reached within {criteria.reach_tolerance*1000:.0f}mm tolerance at t={current_time:.2f}s!"
+    # The recorded best was a pass through the target. Time the recovery instead.
+    if ee_dist_error > criteria.best_ee_error + criteria.flythrough_rise:
+        criteria.best_ee_error = np.inf
+        criteria.best_ee_error_time = current_time
+
+    if ee_dist_error < criteria.best_ee_error - criteria.stall_improvement:
+        criteria.best_ee_error = ee_dist_error
+        criteria.best_ee_error_time = current_time
+
+    if ee_dist_error < criteria.reach_tolerance:
+        if criteria.inside_since < 0.0:
+            criteria.inside_since = current_time
+        held = current_time - criteria.inside_since
+        if held >= criteria.dwell_time and current_time > criteria.min_time:
+            return (f"Target reached within {criteria.reach_tolerance*1000:.0f}mm tolerance "
+                    f"at t={current_time:.2f}s!")
+        return None
+
+    criteria.inside_since = -1.0
+    # The window starts at the later of the last real improvement and min_time.
+    settled_for = current_time - max(criteria.best_ee_error_time, criteria.min_time)
+    if settled_for > criteria.stall_window and current_time > criteria.min_time:
+        return (f"Target not reachable: closest pose reached at t={current_time:.2f}s "
+                f"(best EE error {criteria.best_ee_error:.4f} m, current {ee_dist_error:.4f} m)")
     return None
 
 

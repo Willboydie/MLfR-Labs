@@ -1,0 +1,390 @@
+{
+  "protocol": "GroupKFold on episodes, 5 folds, 20 episodes scored per fold. Training sizes 25, 55, and 80 are drawn from the other 80 after a shuffle. Training samples are shuffled after that. Score is mean standardised MSE across folds.",
+  "sample_stride_s": 0.025,
+  "seed": 0,
+  "ranking": [
+    {
+      "name": "tanh-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "tanh",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 80,
+      "std_mse_mean": 0.037756731392756586,
+      "std_mse_std": 0.025587595880438463,
+      "std_rmse_mean": 0.18585267555382426,
+      "std_rmse_std": 0.06339868277655224,
+      "wheel_rmse_mean": 0.2524047808773869,
+      "wheel_rmse_std": 0.027812550125532992,
+      "torque_rmse_mean": 1.3937326761754172,
+      "torque_rmse_std": 0.4845289102044683,
+      "n_iter_mean": 66.6
+    },
+    {
+      "name": "relu-64x64",
+      "hidden": [
+        64,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 80,
+      "std_mse_mean": 0.059826661297427905,
+      "std_mse_std": 0.03232960094415901,
+      "std_rmse_mean": 0.23771194387046224,
+      "std_rmse_std": 0.0644175154631305,
+      "wheel_rmse_mean": 0.27343198777780686,
+      "wheel_rmse_std": 0.044683351914752534,
+      "torque_rmse_mean": 1.8653803393314115,
+      "torque_rmse_std": 0.48361823918778474,
+      "n_iter_mean": 71.0
+    },
+    {
+      "name": "tanh-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "tanh",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 55,
+      "std_mse_mean": 0.061807720231929764,
+      "std_mse_std": 0.03362591165637131,
+      "std_rmse_mean": 0.24027621241385858,
+      "std_rmse_std": 0.07137105488203956,
+      "wheel_rmse_mean": 0.3441999871121432,
+      "wheel_rmse_std": 0.16566247800013734,
+      "torque_rmse_mean": 1.783406661173106,
+      "torque_rmse_std": 0.4683390802853998,
+      "n_iter_mean": 68.8
+    },
+    {
+      "name": "relu-128x128x64",
+      "hidden": [
+        128,
+        128,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 80,
+      "std_mse_mean": 0.06409883670292069,
+      "std_mse_std": 0.04394837570844514,
+      "std_rmse_mean": 0.24246521070240573,
+      "std_rmse_std": 0.08146669796578448,
+      "wheel_rmse_mean": 0.26051790895959637,
+      "wheel_rmse_std": 0.047657682364961595,
+      "torque_rmse_mean": 1.9169651570398543,
+      "torque_rmse_std": 0.6069837304153834,
+      "n_iter_mean": 47.0
+    },
+    {
+      "name": "relu-256x128",
+      "hidden": [
+        256,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 80,
+      "std_mse_mean": 0.06570145629655906,
+      "std_mse_std": 0.050735055610011716,
+      "std_rmse_mean": 0.24360956782293458,
+      "std_rmse_std": 0.08913357084792808,
+      "wheel_rmse_mean": 0.2588993599253386,
+      "wheel_rmse_std": 0.055567469364071045,
+      "torque_rmse_mean": 1.9150600551939732,
+      "torque_rmse_std": 0.6772687231475906,
+      "n_iter_mean": 60.0
+    },
+    {
+      "name": "relu-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 80,
+      "std_mse_mean": 0.06938968316237326,
+      "std_mse_std": 0.04740650320626671,
+      "std_rmse_mean": 0.2525673804979858,
+      "std_rmse_std": 0.08366153141347961,
+      "wheel_rmse_mean": 0.2802119220866171,
+      "wheel_rmse_std": 0.036891130220527174,
+      "torque_rmse_mean": 2.0092835356097183,
+      "torque_rmse_std": 0.6547814908164069,
+      "n_iter_mean": 60.6
+    },
+    {
+      "name": "relu-128x128-a1e-2",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.01,
+      "n_episodes": 80,
+      "std_mse_mean": 0.08015104423319257,
+      "std_mse_std": 0.06595063566425438,
+      "std_rmse_mean": 0.2662410949296484,
+      "std_rmse_std": 0.10762622591551793,
+      "wheel_rmse_mean": 0.26920837779487405,
+      "wheel_rmse_std": 0.023750488661623746,
+      "torque_rmse_mean": 2.107397214506368,
+      "torque_rmse_std": 0.83961950607983,
+      "n_iter_mean": 57.8
+    },
+    {
+      "name": "relu-128x128x64",
+      "hidden": [
+        128,
+        128,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 55,
+      "std_mse_mean": 0.09310388342393983,
+      "std_mse_std": 0.05234445154557492,
+      "std_rmse_mean": 0.2942813557350159,
+      "std_rmse_std": 0.09015519321356956,
+      "wheel_rmse_mean": 0.364256603133799,
+      "wheel_rmse_std": 0.1943207111034951,
+      "torque_rmse_mean": 2.310350725660675,
+      "torque_rmse_std": 0.6487188497209261,
+      "n_iter_mean": 51.8
+    },
+    {
+      "name": "relu-64x64",
+      "hidden": [
+        64,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 55,
+      "std_mse_mean": 0.09723541897238334,
+      "std_mse_std": 0.04316595005015535,
+      "std_rmse_mean": 0.30589538470106303,
+      "std_rmse_std": 0.06767045691226706,
+      "wheel_rmse_mean": 0.3694368026297827,
+      "wheel_rmse_std": 0.15576008804028826,
+      "torque_rmse_mean": 2.3710024308856794,
+      "torque_rmse_std": 0.44036686337342545,
+      "n_iter_mean": 88.0
+    },
+    {
+      "name": "relu-256x128",
+      "hidden": [
+        256,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 55,
+      "std_mse_mean": 0.0998616596774641,
+      "std_mse_std": 0.040926349193081545,
+      "std_rmse_mean": 0.3106701092507641,
+      "std_rmse_std": 0.0646697658838965,
+      "wheel_rmse_mean": 0.3389228475582308,
+      "wheel_rmse_std": 0.11104881561037244,
+      "torque_rmse_mean": 2.4526261197821553,
+      "torque_rmse_std": 0.4741248219355927,
+      "n_iter_mean": 51.0
+    },
+    {
+      "name": "relu-128x128-a1e-2",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.01,
+      "n_episodes": 55,
+      "std_mse_mean": 0.1084968771088729,
+      "std_mse_std": 0.07200468395153682,
+      "std_rmse_mean": 0.31455370764083157,
+      "std_rmse_std": 0.10927512364600162,
+      "wheel_rmse_mean": 0.39826431230291226,
+      "wheel_rmse_std": 0.18358514013824845,
+      "torque_rmse_mean": 2.457181456623368,
+      "torque_rmse_std": 0.8178971652532012,
+      "n_iter_mean": 62.8
+    },
+    {
+      "name": "relu-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 55,
+      "std_mse_mean": 0.12494783926603499,
+      "std_mse_std": 0.09874452493487737,
+      "std_rmse_mean": 0.33157206132508465,
+      "std_rmse_std": 0.13696627054985705,
+      "wheel_rmse_mean": 0.38637183264931785,
+      "wheel_rmse_std": 0.19817926674720096,
+      "torque_rmse_mean": 2.6010118448144075,
+      "torque_rmse_std": 1.0817636027629365,
+      "n_iter_mean": 63.4
+    },
+    {
+      "name": "tanh-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "tanh",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 25,
+      "std_mse_mean": 0.1597007919755997,
+      "std_mse_std": 0.12527886205592423,
+      "std_rmse_mean": 0.37282690310169364,
+      "std_rmse_std": 0.160860546356153,
+      "wheel_rmse_mean": 0.40317941599404367,
+      "wheel_rmse_std": 0.07901587830584123,
+      "torque_rmse_mean": 2.5182085944792627,
+      "torque_rmse_std": 0.7454230781119587,
+      "n_iter_mean": 78.4
+    },
+    {
+      "name": "relu-128x128x64",
+      "hidden": [
+        128,
+        128,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 25,
+      "std_mse_mean": 0.21365170208001757,
+      "std_mse_std": 0.13634849084765635,
+      "std_rmse_mean": 0.4424129313074349,
+      "std_rmse_std": 0.14967673621834326,
+      "wheel_rmse_mean": 0.530515180370881,
+      "wheel_rmse_std": 0.2000833748195231,
+      "torque_rmse_mean": 3.1548223703180303,
+      "torque_rmse_std": 0.6112510983264798,
+      "n_iter_mean": 57.0
+    },
+    {
+      "name": "relu-128x128",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 25,
+      "std_mse_mean": 0.25614893706167846,
+      "std_mse_std": 0.22767564654219727,
+      "std_rmse_mean": 0.46781798007374337,
+      "std_rmse_std": 0.21591455075272573,
+      "wheel_rmse_mean": 0.5806372278791915,
+      "wheel_rmse_std": 0.24042418807700464,
+      "torque_rmse_mean": 3.3825005715681855,
+      "torque_rmse_std": 1.2115483069265127,
+      "n_iter_mean": 63.4
+    },
+    {
+      "name": "relu-256x128",
+      "hidden": [
+        256,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 25,
+      "std_mse_mean": 0.2576952385680113,
+      "std_mse_std": 0.18973834692174435,
+      "std_rmse_mean": 0.47927241713491525,
+      "std_rmse_std": 0.18706011313768595,
+      "wheel_rmse_mean": 0.5415664143685568,
+      "wheel_rmse_std": 0.24044567439912023,
+      "torque_rmse_mean": 3.466374637219212,
+      "torque_rmse_std": 0.914175492815655,
+      "n_iter_mean": 58.0
+    },
+    {
+      "name": "relu-128x128-a1e-2",
+      "hidden": [
+        128,
+        128
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.01,
+      "n_episodes": 25,
+      "std_mse_mean": 0.2757850457167893,
+      "std_mse_std": 0.2583047731720021,
+      "std_rmse_mean": 0.481492916917174,
+      "std_rmse_std": 0.2343864775199837,
+      "wheel_rmse_mean": 0.5843505490463723,
+      "wheel_rmse_std": 0.2631521256645662,
+      "torque_rmse_mean": 3.4654348010166656,
+      "torque_rmse_std": 1.37427395208078,
+      "n_iter_mean": 76.0
+    },
+    {
+      "name": "relu-64x64",
+      "hidden": [
+        64,
+        64
+      ],
+      "activation": "relu",
+      "lr": 0.001,
+      "alpha": 0.0001,
+      "n_episodes": 25,
+      "std_mse_mean": 0.4479395830875987,
+      "std_mse_std": 0.5586812745872345,
+      "std_rmse_mean": 0.5827865672888376,
+      "std_rmse_std": 0.367932398810046,
+      "wheel_rmse_mean": 0.8676106870819332,
+      "wheel_rmse_std": 0.7251948177254146,
+      "torque_rmse_mean": 3.879601732660851,
+      "torque_rmse_std": 1.7296898610046862,
+      "n_iter_mean": 95.8
+    }
+  ],
+  "best": {
+    "name": "tanh-128x128",
+    "hidden": [
+      128,
+      128
+    ],
+    "activation": "tanh",
+    "lr": 0.001,
+    "alpha": 0.0001,
+    "n_episodes": 80,
+    "std_mse_mean": 0.037756731392756586,
+    "std_mse_std": 0.025587595880438463,
+    "std_rmse_mean": 0.18585267555382426,
+    "std_rmse_std": 0.06339868277655224,
+    "wheel_rmse_mean": 0.2524047808773869,
+    "wheel_rmse_std": 0.027812550125532992,
+    "torque_rmse_mean": 1.3937326761754172,
+    "torque_rmse_std": 0.4845289102044683,
+    "n_iter_mean": 66.6
+  }
+}

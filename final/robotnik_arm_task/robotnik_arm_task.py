@@ -24,10 +24,13 @@ from robotnik_markov_expert import (
     ArmControllerParams as MarkovArmParams,
     BaseControllerParams as MarkovBaseParams,
     MarkovExpert,
+    StopCriteria as MarkovStopCriteria,
     check_stop as markov_check_stop,
     integrator_update,
+    observation_vector,
     relative_target,
 )
+from markov_mlp import load_policy, predict_command
 
 
 # ==============================================================================
@@ -142,9 +145,14 @@ def setup_simulation():
     cur_dir = simulation_root()
     sim = pb.SimInterface(conf_file_name, conf_file_path_ext=cur_dir, use_gui=not headless)
 
-    # Configure realistic ground contact and skid-steer friction dynamics
+    # Rubber on the floor. PyBullet multiplies the two lateral coefficients, so
+    # floor 1 and wheel 1 give μ ≈ 1. Local Y of each wheel is the axle and the
+    # only tangent axis that does not tumble as the wheel spins; a small Y
+    # coefficient is a skate. Drive torque cancels longitudinal slip, so the
+    # tread stays isotropic. frictionAnchor holds the contact until μN is exceeded.
     sim.SetFloorFriction(1.0)
     client = sim.pybullet_client
+    client.setPhysicsEngineParameter(enableConeFriction=1, numSolverIterations=100)
     rid = sim.bot[0].bot_pybullet
     wheel_joint_ids = [
         j for j in range(client.getNumJoints(rid))
@@ -153,9 +161,14 @@ def setup_simulation():
     for j in wheel_joint_ids:
         client.changeDynamics(
             rid, j,
+            lateralFriction=1.0,
+            spinningFriction=0.05,
+            rollingFriction=0.01,
+            frictionAnchor=1,
+            restitution=0.0,
             contactStiffness=30000,
             contactDamping=1000,
-            anisotropicFriction=[1.0, 0.01, 1.0]
+            anisotropicFriction=[1.0, 1.0, 1.0],
         )
     sim.bot[0].servo_motor_model.set_motor_gains(400, 30)
 
@@ -231,9 +244,10 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
                 controller="phased"):
     """Reset the robot and run one expert until a stop condition.
 
-    `controller` is `"phased"` (the original base phases plus joint-space integrator) or
-    `"markov"` (a call on the heading-frame observation and the cartesian integrator z).
-    Both start from the same reset pose. `target_ee_pos` is a world-frame Cartesian point (m).
+    `controller` is `"phased"` (the original base phases plus joint-space integrator),
+    `"markov"` (a call on the heading-frame observation and the cartesian integrator z),
+    or `"mlp"` (the trained tanh network, with that same integrator updated outside it).
+    All three start from the same reset pose. `target_ee_pos` is a world-frame Cartesian point (m).
 
     Returns final error, the stop message, and (optionally) the time series used by the
     single-target plots.
@@ -241,8 +255,8 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
     `on_step(current_time, ee_dist_error)` is called about 20 times a second after the
     physics step. Return False from it to stop the episode early.
     """
-    if controller not in ("phased", "markov"):
-        raise ValueError(f"Unknown controller {controller!r}; expected 'phased' or 'markov'")
+    if controller not in ("phased", "markov", "mlp"):
+        raise ValueError(f"Unknown controller {controller!r}; expected 'phased', 'markov', or 'mlp'")
     sim = ctx["sim"]
     client = ctx["client"]
     dyn_model = ctx["dyn_model"]
@@ -258,15 +272,25 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
     q_init_arm = ctx["q_init_arm"]
     q_des_arm = q_init_arm.copy()
     qd_des_arm = np.zeros(7)
-    stop_criteria = StopCriteria(reach_tolerance=REACH_TOLERANCE, max_steps=max_steps)
-    if controller == "markov":
+    reach_w = 0.0
+    mlp_policy = None
+    if controller in ("markov", "mlp"):
+        # The Markov rule dwells inside the tolerance and ignores a fly-through minimum.
+        # It needs its own criteria object; the phased one has neither field.
+        # The MLP uses that same stop rule. z is updated outside the network.
+        stop_criteria = MarkovStopCriteria(reach_tolerance=REACH_TOLERANCE, max_steps=max_steps)
         markov_expert = _markov_expert(ctx, target_ee_pos)
-        # z integrates the end-effector error outside the expert. It starts at rest.
         z = np.zeros(3)
         base_state = None
         base_goal_pos = base_goal_bearing = None
+        if controller == "mlp":
+            mlp_policy = ctx.get("mlp_policy")
+            if mlp_policy is None:
+                mlp_policy = load_policy()
+                ctx["mlp_policy"] = mlp_policy
     else:
         markov_expert = None
+        stop_criteria = StopCriteria(reach_tolerance=REACH_TOLERANCE, max_steps=max_steps)
         base_goal_pos, base_goal_bearing = _base_goal(target_ee_pos)
         base_state = BaseNavState()
     cmd = MotorCommands()
@@ -316,18 +340,27 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         ee_error = target_ee_pos - ee_pos
         ee_dist_error = np.linalg.norm(ee_error)
 
-        if controller == "markov":
+        if controller in ("markov", "mlp"):
             # World pose enters only through the heading-frame displacement.
             # The command uses the current z; the update below is z for the next step.
+            q_arm = q_mes[4:11]
+            qd_arm = qd_mes[4:11]
             target_rel = relative_target(target_ee_pos, base_pos, base_bearing)
-            cmd_exp = markov_expert(q_pin, q_mes[4:11], qd_mes[4:11], target_rel, z)
-            wheel_cmds = cmd_exp.wheel_cmd
-            torque_arm = cmd_exp.torque_arm
-            q_des_arm = cmd_exp.q_ref_arm
-            arm_engaged = cmd_exp.reach_weight >= 0.999
-            stop_ee = cmd_exp.ee_error
+            if controller == "markov":
+                cmd_exp = markov_expert(q_pin, q_arm, qd_arm, target_rel, z)
+                wheel_cmds = cmd_exp.wheel_cmd
+                torque_arm = cmd_exp.torque_arm
+                q_des_arm = cmd_exp.q_ref_arm
+                cart_err = cmd_exp.cartesian_error
+                reach_w = cmd_exp.reach_weight
+            else:
+                obs = observation_vector(target_rel, q_pin, q_arm, qd_arm, z)
+                wheel_cmds, torque_arm = predict_command(mlp_policy, obs)
+                q_des_arm = np.asarray(q_arm, dtype=float)
+                cart_err, reach_w = markov_expert.cartesian_feedback(q_pin, target_rel)
+            arm_engaged = reach_w >= 0.999
             z = integrator_update(
-                z, cmd_exp.cartesian_error, cmd_exp.reach_weight, time_step, markov_expert.arm_params.z_max,
+                z, cart_err, reach_w, time_step, markov_expert.arm_params.z_max,
             )
         else:
             wheel_cmds = base_controller(
@@ -339,7 +372,6 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
                 ctx["ee_frame_id"], ctx["shoulder_frame_id"], ctx["arm_lower"], ctx["arm_upper"], time_step,
                 ctx["arm_params"], reach_active=arm_engaged,
             )
-            stop_ee = ee_dist_error
         torque_fingers = np.zeros(6)
 
         cmd_all = np.concatenate((wheel_cmds, torque_arm, torque_fingers))
@@ -359,12 +391,14 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
             stop_message = "Stopped by user"
             break
 
-        if controller == "markov":
+        if controller in ("markov", "mlp"):
+            # World-frame distance. The heading-frame error drifts by a few
+            # millimetres when the base tilts, which is enough to trip a 2 mm stall.
             stop_message = markov_check_stop(
-                stop_criteria, current_time, time_step, stop_ee, arm_engaged
+                stop_criteria, current_time, time_step, ee_dist_error, arm_engaged
             )
         else:
-            stop_message = check_stop(stop_criteria, current_time, time_step, stop_ee, arm_engaged)
+            stop_message = check_stop(stop_criteria, current_time, time_step, ee_dist_error, arm_engaged)
         if stop_message:
             if verbose:
                 print(stop_message)
@@ -379,7 +413,7 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
             q_d_all.append(current_desired_q)
             torque_arm_all.append(np.asarray(torque_arm, dtype=float).copy())
             wheel_cmds_all.append(np.asarray(wheel_cmds, dtype=float).copy())
-            if controller == "markov":
+            if controller in ("markov", "mlp"):
                 phase_all.append("reach" if arm_engaged else "hold")
             else:
                 phase_all.append("done" if base_state.done else base_state.phase)
@@ -399,9 +433,9 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         current_time += time_step
         step_index += 1
         if verbose and int(current_time / time_step) % 500 == 0:
-            if controller == "markov":
+            if controller in ("markov", "mlp"):
                 status = (
-                    f"reach_w {cmd_exp.reach_weight:.2f} engaged {arm_engaged} "
+                    f"reach_w {reach_w:.2f} engaged {arm_engaged} "
                     f"|z| {np.linalg.norm(z):.4f}"
                 )
             else:
@@ -777,6 +811,12 @@ COMPARE_TARGETS = [
 COMPARE_SIM_SECONDS = 40.0
 
 
+def target_dirname(target):
+    """Folder name for one target, e.g. `1.20_0.00_0.25` or `-1.20_1.20_0.70`."""
+    target = np.asarray(target, dtype=float)
+    return f"{target[0]:.2f}_{target[1]:.2f}_{target[2]:.2f}"
+
+
 def _target_panel_title(result_a, result_b):
     target = np.asarray(result_a["target"], dtype=float)
     return (
@@ -785,19 +825,30 @@ def _target_panel_title(result_a, result_b):
     )
 
 
-def plot_controller_comparison(phased_results, markov_results):
+def plot_controller_comparison(phased_results, markov_results, out_dir=None):
     """Overlay original and Markov wheel commands, arm torques and EE error.
 
     One panel per target. Wheel commands show the two distinct sides (the back
     wheel on each side copies the front). Torque panels use one colour per joint;
-    solid is the original, dashed is Markov.
+    solid is the original, dashed is Markov. A single target is written under
+    `plots/markov_vs_original/<x>_<y>_<z>/`.
     """
     n = len(phased_results)
-    ncols = 2
+    ncols = 1 if n == 1 else 2
     nrows = int(np.ceil(n / ncols))
+    if out_dir is None:
+        if n == 1:
+            out_dir = plots_dir("markov_vs_original", target_dirname(phased_results[0]["target"]))
+        else:
+            out_dir = plots_dir("markov_vs_original")
+    else:
+        os.makedirs(out_dir, exist_ok=True)
     saved = []
+    ee_figsize = (8.5, 3.8) if n == 1 else (11.5, 2.35 * nrows)
+    wheel_figsize = (10.5, 4.4) if n == 1 else (10.5, 1.55 * n)
+    torque_figsize = (10.5, 5.2) if n == 1 else (12.5, 2.6 * nrows)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(11.5, 2.35 * nrows), squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=ee_figsize, squeeze=False)
     flat = axes.ravel()
     for ax, phased, markov in zip(flat, phased_results, markov_results):
         if len(phased["time_all"]):
@@ -820,12 +871,11 @@ def plot_controller_comparison(phased_results, markov_results):
     flat[0].legend(loc="upper right", fontsize=8)
     fig.suptitle("End-effector error — original vs Markov", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    compare_dir = plots_dir("markov_vs_original")
-    ee_path = os.path.join(compare_dir, "ee.png")
+    ee_path = os.path.join(out_dir, "ee.png")
     fig.savefig(ee_path, dpi=120, bbox_inches="tight")
     saved.append(ee_path)
 
-    fig, axes = plt.subplots(n, 2, figsize=(10.5, 1.55 * n), sharex=True, squeeze=False)
+    fig, axes = plt.subplots(n, 2, figsize=wheel_figsize, sharex=True, squeeze=False)
     for row, (phased, markov) in enumerate(zip(phased_results, markov_results)):
         for col, index, name in ((0, 0, "Right wheels"), (1, 1, "Left wheels")):
             ax = axes[row, col]
@@ -846,11 +896,11 @@ def plot_controller_comparison(phased_results, markov_results):
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    wheel_path = os.path.join(compare_dir, "wheels.png")
+    wheel_path = os.path.join(out_dir, "wheels.png")
     fig.savefig(wheel_path, dpi=120, bbox_inches="tight")
     saved.append(wheel_path)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12.5, 2.6 * nrows), squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=torque_figsize, squeeze=False)
     flat = axes.ravel()
     joint_colors = plt.cm.tab10(np.linspace(0.0, 0.7, 7))
     for ax, phased, markov in zip(flat, phased_results, markov_results):
@@ -874,7 +924,7 @@ def plot_controller_comparison(phased_results, markov_results):
     flat[0].legend(ncol=7, loc="upper right", fontsize=7)
     fig.suptitle("Arm torques — solid original, dashed Markov, colour is the joint", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    torque_path = os.path.join(compare_dir, "torques.png")
+    torque_path = os.path.join(out_dir, "torques.png")
     fig.savefig(torque_path, dpi=120, bbox_inches="tight")
     saved.append(torque_path)
 
@@ -887,10 +937,18 @@ def plot_controller_comparison(phased_results, markov_results):
     return saved
 
 
-def compare_controllers():
-    """Run the phased expert and the Markov expert on the same ten targets."""
+def compare_controllers(targets=None):
+    """Run the phased expert and the Markov expert on the same targets.
+
+    `targets` defaults to the ten-target set. One target is saved under
+    `plots/markov_vs_original/<x>_<y>_<z>/` instead of the shared overview figures.
+    """
     global max_steps
-    targets = [np.asarray(target, dtype=float) for target in COMPARE_TARGETS]
+    if targets is None:
+        targets = [np.asarray(target, dtype=float) for target in COMPARE_TARGETS]
+    else:
+        targets = [np.asarray(target, dtype=float) for target in targets]
+    single = len(targets) == 1
     print(f"Comparing controllers on {len(targets)} targets", flush=True)
     ctx = setup_simulation()
     dt = float(ctx["time_step"])
@@ -922,7 +980,13 @@ def compare_controllers():
         return
 
     scored = np.vstack([result["target"] for result in phased_results])
-    out_path = os.path.join(plots_dir("markov_vs_original"), "markov_vs_original.npz")
+    if single:
+        out_dir = plots_dir("markov_vs_original", target_dirname(targets[0]))
+        npz_name = "comparison.npz"
+    else:
+        out_dir = plots_dir("markov_vs_original")
+        npz_name = "markov_vs_original.npz"
+    out_path = os.path.join(out_dir, npz_name)
     np.savez(
         out_path,
         targets=scored,
@@ -943,7 +1007,24 @@ def compare_controllers():
         markov_torques=np.array([result["torque_arm_all"] for result in markov_results], dtype=object),
     )
     print(f"Saved {out_path}")
-    plot_controller_comparison(phased_results, markov_results)
+    plot_controller_comparison(phased_results, markov_results, out_dir=out_dir)
+
+
+def _argv_target(argv):
+    """`--target x y z` or `--target x,y,z`, in metres. None if the flag is absent."""
+    if "--target" not in argv:
+        return None
+    values = []
+    for token in argv[argv.index("--target") + 1:]:
+        if token.startswith("--"):
+            break
+        values.extend(part for part in token.split(",") if part != "")
+    if len(values) != 3:
+        raise SystemExit("Expected --target x y z (metres), for example: --compare --target 1.2 0 0.25")
+    try:
+        return np.array([float(value) for value in values], dtype=float)
+    except ValueError:
+        raise SystemExit("Expected --target x y z (metres), for example: --compare --target 1.2 0 0.25")
 
 
 def main():
@@ -961,7 +1042,8 @@ def main():
 
 if __name__ == '__main__':
     if "--compare" in sys.argv:
-        compare_controllers()
+        specified = _argv_target(sys.argv)
+        compare_controllers(None if specified is None else [specified])
     elif "--grid-plot" in sys.argv:
         plot_saved_grid()
     elif os.environ.get("ROBOENV_GRID", "").strip().lower() in ("1", "true", "yes") or "--grid" in sys.argv:

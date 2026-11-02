@@ -42,6 +42,7 @@ class ExpertApp:
 
         self.root = tk.Tk()
         self.root.title("Expert playback")
+        self._controller = tk.StringVar(self.root, value="Original")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -55,7 +56,7 @@ class ExpertApp:
             frame,
             text=(
                 "The robot starts in its default pose.\n"
-                "Set the red target, then press GO.\n"
+                "Set the red target, choose a controller, then press GO.\n"
                 "Drag in the PyBullet window to orbit the camera."
             ),
             justify="left",
@@ -78,12 +79,23 @@ class ExpertApp:
             self._scales.append(scale)
             self._spins.append(spin)
 
+        ttk.Label(frame, text="Controller").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        self.controller_box = ttk.Combobox(
+            frame,
+            textvariable=self._controller,
+            values=("Original", "Markov", "MLP"),
+            state="disabled",
+            width=18,
+        )
+        self.controller_box.grid(row=5, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
+        self.controller_box.bind("<<ComboboxSelected>>", lambda _event: self._on_expert_changed())
+
         self.go_button = ttk.Button(frame, text="GO", command=self._on_go, state="disabled")
-        self.go_button.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(14, 8), ipady=4)
+        self.go_button.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(14, 8), ipady=4)
 
         self.status = tk.StringVar(value="Opening the PyBullet window…")
         ttk.Label(frame, textvariable=self.status, wraplength=340, justify="left").grid(
-            row=6, column=0, columnspan=3, sticky="w"
+            row=7, column=0, columnspan=3, sticky="w"
         )
 
         self.root.bind("<Return>", lambda _event: self._on_go())
@@ -95,19 +107,37 @@ class ExpertApp:
         except (tk.TclError, ValueError):
             return None
 
+    def _expert_name(self):
+        return self._controller.get()
+
+    def _controller_name(self):
+        return {"Original": "phased", "Markov": "markov", "MLP": "mlp"}[self._controller.get()]
+
     def _set_inputs_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
         for widget in (*self._scales, *self._spins, self.go_button):
             widget.configure(state=state)
+        self.controller_box.configure(state="readonly" if enabled else "disabled")
 
     def _idle_status(self):
         target = self._read_target()
         if target is None:
             return "Enter a numeric target in metres."
         return (
-            f"Default start pose. Target ({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}) m. "
-            "Press GO."
+            f"{self._expert_name()}. Default start pose. "
+            f"Target ({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}) m. Press GO."
         )
+
+    def _on_expert_changed(self):
+        if self._running or self.ctx is None:
+            return
+        if self._away_from_start:
+            self.status.set(
+                f"{self._expert_name()} selected. "
+                "Press GO to run again from the default start."
+            )
+            return
+        self.status.set(self._idle_status())
 
     def _sync_marker(self):
         target = self._read_target()
@@ -183,7 +213,9 @@ class ExpertApp:
     def _on_step(self, current_time, ee_dist_error):
         if self._stop:
             return False
-        self.status.set(f"Running   t={current_time:.1f}s   EE error {ee_dist_error:.3f} m")
+        self.status.set(
+            f"{self._expert_name()}   t={current_time:.1f}s   EE error {ee_dist_error:.3f} m"
+        )
         try:
             self.root.update()
         except tk.TclError:
@@ -199,8 +231,9 @@ class ExpertApp:
             return
 
         self._running = True
+        expert_name = self._expert_name()
         self._set_inputs_enabled(False)
-        self.status.set("Running the expert from the default start…")
+        self.status.set(f"Running {expert_name} from the default start…")
         self.root.update_idletasks()
         try:
             result = task.run_episode(
@@ -210,6 +243,7 @@ class ExpertApp:
                 verbose=True,
                 realtime=True,
                 on_step=self._on_step,
+                controller=self._controller_name(),
             )
         except Exception as exc:
             result = None
@@ -226,7 +260,7 @@ class ExpertApp:
         self._away_from_start = True
         message = result["stop_message"] or "Finished"
         self.status.set(
-            f"{message} Final error {result['final_error']:.3f} m. "
+            f"{expert_name}: {message} Final error {result['final_error']:.3f} m. "
             "Move the target or press GO to run again from the default start."
         )
 

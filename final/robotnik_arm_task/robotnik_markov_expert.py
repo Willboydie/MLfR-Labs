@@ -408,6 +408,7 @@ class ExpertCommand:
     cartesian_error: np.ndarray   # (3,) e used by the PI and by integrator_update
     dist_error: float             # m, rho - standoff
     bearing_error: float          # rad, bearing of the target in the base frame
+    tau_gravity: np.ndarray       # (7,) N*m, gravity term added inside arm_torque, before the clip
 
 
 class MarkovExpert:
@@ -502,6 +503,7 @@ class MarkovExpert:
             cartesian_error=ee_error_vec,
             dist_error=float(dist_err),
             bearing_error=float(bearing_err),
+            tau_gravity=np.asarray(tau_g, dtype=float),
         )
 
 

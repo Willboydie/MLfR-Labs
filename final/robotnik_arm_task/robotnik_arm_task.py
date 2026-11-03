@@ -76,6 +76,18 @@ def plots_dir(*parts):
     return path
 
 
+def _demo_policy():
+    """The split DAgger winner when it exists, otherwise the earlier single network."""
+    import joblib
+
+    path = os.path.join(TASK_DIR, "markov_v2", "winner.joblib")
+    if os.path.isfile(path):
+        policy = joblib.load(path)
+        if policy.get("kind") in ("split", "mono"):
+            return policy
+    return load_policy()
+
+
 def sparse_target_grid():
     """Cartesian targets on GRID_X × GRID_Y × GRID_Z, excluding the robot footprint."""
     targets = [
@@ -286,7 +298,7 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
         if controller == "mlp":
             mlp_policy = ctx.get("mlp_policy")
             if mlp_policy is None:
-                mlp_policy = load_policy()
+                mlp_policy = _demo_policy()
                 ctx["mlp_policy"] = mlp_policy
     else:
         markov_expert = None
@@ -354,8 +366,17 @@ def run_episode(ctx, target_ee_pos, *, record=True, verbose=True, realtime=False
                 cart_err = cmd_exp.cartesian_error
                 reach_w = cmd_exp.reach_weight
             else:
-                obs = observation_vector(target_rel, q_pin, q_arm, qd_arm, z)
-                wheel_cmds, torque_arm = predict_command(mlp_policy, obs)
+                # z, the cartesian error, and the reach weight are the expert's
+                # formulas, updated outside the network. A split policy also adds
+                # the expert's gravity torque back onto a residual the arm net predicts.
+                if mlp_policy.get("kind") in ("split", "mono"):
+                    from policy_v2 import command_from_policy
+                    wheel_cmds, torque_arm, _, _ = command_from_policy(
+                        mlp_policy, q_pin, q_arm, qd_arm, target_rel, z, markov_expert,
+                    )
+                else:
+                    obs = observation_vector(target_rel, q_pin, q_arm, qd_arm, z)
+                    wheel_cmds, torque_arm = predict_command(mlp_policy, obs)
                 q_des_arm = np.asarray(q_arm, dtype=float)
                 cart_err, reach_w = markov_expert.cartesian_feedback(q_pin, target_rel)
             arm_engaged = reach_w >= 0.999

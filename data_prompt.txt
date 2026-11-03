@@ -1,0 +1,77 @@
+Phase 0: Change the collector (once, for both phases)
+
+Make every change now, including the noise code, so both halves come from the same commit. The only thing that differs between the halves is the noise setting in the config.
+
+Targets. Use 500 targets with 0.066 < z < 1.325 and −2 < x, y < 2, in world coordinates about the reset base.
+
+Sample with a Latin hypercube (scipy.stats.qmc.LatinHypercube, seeded) rather than independent uniform draws. It spreads exactly 500 points evenly through the box.
+About 4% of targets (~20) will fall within 0.4 m of the base centre, so they start inside the chassis footprint. The original task grid excluded these. Put a few in the pilot, then decide whether to keep or reject them, and record the decision.
+Corner targets are up to 2.8 m away, so check in the pilot that reachable episodes finish well inside the 40 s cap.
+The standoff table clamps outside z = 0.1–1.25 m (0.80 m below, 0.35 m above). The expert stalled about 30 mm from the floor targets on your lattice, so expect misses in the lowest band. Keep them: they’re still expert behaviour.
+
+Starting conditions.
+
+Start the arm at q_hold plus a uniform ±0.15 rad on each joint, clipped inside the joint limits, with zero velocity. Set it with resetJointState after ResetPose(), and check for self-contact.
+Keep the base’s world position and heading fixed for training. Randomise them only in a test set, to check that your heading-frame inputs really are invariant.
+
+Noise code (set to zero in Phase 1). Replace the per-step independent noise in apply_dart with an Ornstein–Uhlenbeck process: ε ← a·ε + √(1−a²)·L·n, with a = exp(−dt/τ).
+
+L is the Cholesky factor of a 9×9 covariance Σ over [right wheel, left wheel, 7 torques].
+Σ and τ are config values, both zero for the clean run.
+With independent noise every 1 ms, the robot’s inertia smooths it out. Over 25 ms it shifts joint velocities about 5× less than a steady error of the same size, and about 14× less over 200 ms. That’s why the noise has to be correlated in time.
+Labels stay the clean expert command, which the code already does.
+
+When an episode ends.
+
+Reached (10 mm held for 0.5 s): keep logging for 3 s more, so you get data of the arm holding at the target.
+Stalled: stop, as now.
+Time cap: 40 s.
+Instability check: stop and flag the episode if:
+an arm joint exceeds 3 rad/s for more than 0.5 s;
+base roll or pitch exceeds 10°;
+the end-effector goes below the floor;
+any value is NaN.
+
+Logging.
+
+Log the full raw state every 5 ms in float32:
+base position, quaternion, and linear and angular velocity;
+every motor’s angle and velocity, wheels included;
+z, the reach weight and the Cartesian error;
+the clean labels and the commands actually applied.
+Anything derived from the configuration (gravity torque, Jacobian, end-effector position) can be recomputed offline with Pinocchio.
+Expect well under 1 GB per 500 episodes. Keep the data out of git.
+
+Reproducibility.
+
+Write a manifest before any rollout, with one row per episode id: target, arm offset, initial-state seed, noise seed, and cross-validation fold.
+Derive seeds from the id with SeedSequence([seed, id]), and give the noise its own stream.
+Store in the metadata:
+the git commit;
+a SHA-256 hash of the expert and task files;
+all gains and gate parameters;
+Σ, τ and the time step;
+library versions.
+
+Extend _check_meta so a resume is refused if any of these differ.
+
+Test that running the same episode twice produces an identical file.
+Phase 1: 500 clean episodes
+Pilot of 20, including a few targets inside the footprint and a few at the corners and the lowest band. Measure:
+wall time and disk use per episode;
+expert success by height band and by distance;
+flag counts.
+
+Also watch 2–3 in the GUI, including one of the brief joint-speed spikes about 0.3 s in, which appear in 128 of your 150 old episodes.
+
+Freeze. Commit the code and config.
+Full run, sharded with --shard i/n, one process per physical core. That’s roughly 3 hours of simulated time; the pilot tells you how fast your machine runs relative to real time.
+Quality report before training. Script it to cover:
+episode counts;
+expert success by region;
+episode lengths;
+flags;
+the share of rows with saturated torque, joint speed above 1 rad/s, or saturated z;
+a coverage plot of the targets.
+
+Write the filtering rules down now, for example: drop flagged episodes, keep misses.

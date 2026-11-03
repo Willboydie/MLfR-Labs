@@ -9,3 +9,5 @@ RoboEnv/
 final/robotnik_arm_task/bc_data/
 final/robotnik_arm_task/bc_model/
 final/robotnik_arm_task/markov_data/
+final/robotnik_arm_task/markov_v2/
+final/robotnik_arm_task/markov_v2_smoke/
